@@ -9,7 +9,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.routing import Mount
 import httpx
+
+from mcp.server.fastmcp import FastMCP
 
 from .config import QlikSenseConfig
 from .server import QlikSenseMCPServer
@@ -34,6 +37,9 @@ app.add_middleware(
 # Global server instance
 mcp_server: Optional[QlikSenseMCPServer] = None
 
+# FastMCP instance for Streamable HTTP transport
+fastmcp = FastMCP("Qlik Sense MCP Server", streamable_http_path="/mcp")
+
 
 class ToolRequest(BaseModel):
     """Request model for tool execution."""
@@ -47,6 +53,166 @@ class HealthResponse(BaseModel):
     server_url: Optional[str] = None
     has_api_key: bool = False
     config_valid: bool = False
+
+
+# Register FastMCP tools
+@fastmcp.tool()
+async def get_apps(
+    limit: int = 25,
+    offset: int = 0,
+    name: Optional[str] = None,
+    space_id: Optional[str] = None
+) -> str:
+    """
+    Get list of Qlik Cloud applications with essential fields and filters (name, space) and pagination.
+    
+    Args:
+        limit: Maximum number of apps to return (default: 25, max: 50)
+        offset: Number of apps to skip for pagination (default: 0)
+        name: Wildcard case-insensitive search in application name
+        space_id: Filter applications by Space ID
+    
+    Returns:
+        JSON string with list of applications
+    """
+    if mcp_server is None:
+        return json.dumps({"error": "MCP Server not initialized"}, indent=2)
+    
+    if not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server configuration invalid"}, indent=2)
+    
+    try:
+        result = await mcp_server.call_tool_direct("get_apps", {
+            "limit": limit,
+            "offset": offset,
+            "name": name,
+            "space_id": space_id
+        })
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_apps tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_app_details(app_id: str) -> str:
+    """
+    Get application details including metadata and information from Qlik Cloud.
+    
+    Args:
+        app_id: Application ID
+    
+    Returns:
+        JSON string with application details
+    """
+    if mcp_server is None:
+        return json.dumps({"error": "MCP Server not initialized"}, indent=2)
+    
+    if not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server configuration invalid"}, indent=2)
+    
+    try:
+        result = await mcp_server.call_tool_direct("get_app_details", {
+            "app_id": app_id
+        })
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_app_details tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_datasets(
+    limit: int = 100,
+    offset: int = 0,
+    space_id: Optional[str] = None
+) -> str:
+    """
+    Get list of data assets (datasets) from Qlik Cloud.
+    
+    Args:
+        limit: Maximum number of datasets to return (default: 100)
+        offset: Number of datasets to skip for pagination (default: 0)
+        space_id: Filter datasets by Space ID
+    
+    Returns:
+        JSON string with list of datasets
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(
+            mcp_server.cloud_api.get_data_assets,
+            limit=limit,
+            offset=offset,
+            space_id=space_id
+        )
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_datasets tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_dataset(dataset_id: str) -> str:
+    """
+    Get specific dataset details by ID from Qlik Cloud.
+    
+    Args:
+        dataset_id: Dataset ID
+    
+    Returns:
+        JSON string with dataset details
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(mcp_server.cloud_api.get_data_asset, dataset_id)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_dataset tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_spaces(
+    limit: int = 100,
+    offset: int = 0
+) -> str:
+    """
+    Get list of spaces from Qlik Cloud.
+    
+    Args:
+        limit: Maximum number of spaces to return (default: 100)
+        offset: Number of spaces to skip for pagination (default: 0)
+    
+    Returns:
+        JSON string with list of spaces
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(
+            mcp_server.cloud_api.get_spaces,
+            limit=limit,
+            offset=offset
+        )
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_spaces tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @app.on_event("startup")
@@ -65,6 +231,10 @@ async def startup_event():
                 logger.error("Cloud API client failed to initialize - check configuration and API key")
         else:
             logger.warning("MCP Server configuration is invalid - check QLIK_SERVER_URL and QLIK_API_KEY")
+        
+        # Mount FastMCP Streamable HTTP app on /mcp after server initialization
+        app.mount("/mcp", fastmcp.streamable_http_app())
+        logger.info("FastMCP Streamable HTTP endpoint mounted on /mcp")
     except Exception as e:
         logger.error(f"Failed to initialize MCP Server: {e}", exc_info=True)
         mcp_server = None
@@ -80,7 +250,8 @@ async def root():
         "docs": "/docs",
         "redoc": "/redoc",
         "health": "/health",
-        "openapi": "/openapi.json"
+        "openapi": "/openapi.json",
+        "mcp": "/mcp"
     }
 
 
@@ -152,7 +323,10 @@ async def list_tools():
     # List of available tools (Qlik Cloud only)
     tools = [
         "get_apps",
-        "get_app_details"
+        "get_app_details",
+        "get_datasets",
+        "get_dataset",
+        "get_spaces"
     ]
     
     return {
