@@ -38,7 +38,8 @@ app.add_middleware(
 mcp_server: Optional[QlikSenseMCPServer] = None
 
 # FastMCP instance for Streamable HTTP transport
-fastmcp = FastMCP("Qlik Sense MCP Server", streamable_http_path="/mcp")
+# streamable_http_path="/" means the app handles requests at the mount root
+fastmcp = FastMCP("Qlik Sense MCP Server", streamable_http_path="/")
 
 
 class ToolRequest(BaseModel):
