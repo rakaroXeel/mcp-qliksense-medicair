@@ -58,7 +58,7 @@ class QlikEngineAPI:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
 
-        if self.config.client_cert_path and self.config.client_key_path:
+        if not self.config.api_key and self.config.client_cert_path and self.config.client_key_path:
             ssl_context.load_cert_chain(
                 self.config.client_cert_path, self.config.client_key_path
             )
@@ -67,9 +67,13 @@ class QlikEngineAPI:
             ssl_context.load_verify_locations(self.config.ca_cert_path)
 
         # Headers for authentication
-        headers = [
-            f"X-Qlik-User: UserDirectory={self.config.user_directory}; UserId={self.config.user_id}"
-        ]
+        headers = []
+        if self.config.api_key:
+            # Use API key authentication
+            headers.append(f"Authorization: Bearer {self.config.api_key}")
+        elif self.config.user_directory and self.config.user_id:
+            # Use certificate-based authentication with user header
+            headers.append(f"X-Qlik-User: UserDirectory={self.config.user_directory}; UserId={self.config.user_id}")
 
         last_error = None
         for url in endpoints_to_try:

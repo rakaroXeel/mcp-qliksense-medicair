@@ -29,9 +29,9 @@ class QlikRepositoryAPI:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
 
-        # Setup client certificates if provided
+        # Setup client certificates if provided (only if not using API key)
         cert = None
-        if self.config.client_cert_path and self.config.client_key_path:
+        if not self.config.api_key and self.config.client_cert_path and self.config.client_key_path:
             cert = (self.config.client_cert_path, self.config.client_key_path)
 
         # Timeouts from env (seconds)
@@ -41,15 +41,24 @@ class QlikRepositoryAPI:
         except ValueError:
             timeout_val = 10.0
 
+        # Setup headers based on authentication method
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        if self.config.api_key:
+            # Use API key authentication
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        elif self.config.user_directory and self.config.user_id:
+            # Use certificate-based authentication with user header
+            headers["X-Qlik-User"] = f"UserDirectory={self.config.user_directory}; UserId={self.config.user_id}"
+
         # Create httpx client with certificates and SSL context
         self.client = httpx.Client(
             verify=ssl_context if self.config.verify_ssl else False,
             cert=cert,
             timeout=timeout_val,
-            headers={
-                "X-Qlik-User": f"UserDirectory={self.config.user_directory}; UserId={self.config.user_id}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
 
     def _get_api_url(self, endpoint: str) -> str:
