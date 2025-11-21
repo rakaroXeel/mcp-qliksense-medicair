@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional
 import httpx
 import logging
 import os
+import time
 from .config import QlikSenseConfig
 
 logger = logging.getLogger(__name__)
@@ -17,8 +18,11 @@ class QlikCloudAPI:
         self.config = config
         self.base_url = config.server_url.rstrip('/')
         
-        if not config.api_key:
-            raise ValueError("API key is required for Qlik Cloud authentication")
+        # Validate authentication method
+        if not config.uses_oauth() and not config.uses_api_key():
+            raise ValueError(
+                "Either OAuth2 M2M credentials or API key is required for Qlik Cloud authentication"
+            )
         
         # Setup SSL verification (Qlik Cloud uses standard SSL)
         verify_ssl = config.verify_ssl
@@ -30,19 +34,97 @@ class QlikCloudAPI:
         except ValueError:
             timeout_val = 30.0
 
-        # Setup headers - Qlik Cloud uses Bearer token authentication
+        # OAuth token caching
+        self._oauth_token: Optional[str] = None
+        self._oauth_token_expires_at: float = 0.0
+        
+        # Setup headers - will be updated dynamically based on auth method
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "Authorization": f"Bearer {config.api_key}"
         }
 
-        # Create httpx client
+        # Create httpx client (headers will be updated per request if using OAuth)
         self.client = httpx.Client(
             verify=verify_ssl,
             timeout=timeout_val,
             headers=headers,
         )
+        
+        # Log authentication method
+        if config.uses_oauth():
+            logger.info("Using OAuth2 M2M authentication for Qlik Cloud")
+        else:
+            logger.info("Using API key authentication for Qlik Cloud")
+            # Set API key header immediately if using API key
+            self.client.headers["Authorization"] = f"Bearer {config.api_key}"
+    
+    def _get_oauth_token(self) -> str:
+        """
+        Get OAuth2 access token using client credentials flow.
+        Implements token caching with automatic renewal.
+        
+        Returns:
+            Access token string
+            
+        Raises:
+            ValueError: If OAuth credentials are not configured
+            Exception: If token request fails
+        """
+        if not self.config.uses_oauth():
+            raise ValueError("OAuth2 credentials not configured")
+        
+        # Check if cached token is still valid (with 60 second buffer)
+        current_time = time.time()
+        if self._oauth_token and current_time < (self._oauth_token_expires_at - 60):
+            return self._oauth_token
+        
+        # Request new token
+        token_url = f"{self.base_url}/oauth/token"
+        
+        # Prepare form data for client credentials flow
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self.config.oauth_client_id,
+            "client_secret": self.config.oauth_client_secret,
+        }
+        
+        try:
+            # Use a separate client for token request (no auth header needed)
+            token_client = httpx.Client(
+                verify=self.config.verify_ssl,
+                timeout=30.0,
+            )
+            
+            response = token_client.post(
+                token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            response.raise_for_status()
+            
+            token_data = response.json()
+            access_token = token_data.get("access_token")
+            expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour
+            
+            if not access_token:
+                raise ValueError("No access_token in OAuth response")
+            
+            # Cache token with expiration time
+            self._oauth_token = access_token
+            self._oauth_token_expires_at = current_time + expires_in
+            
+            logger.debug(f"OAuth token obtained, expires in {expires_in} seconds")
+            
+            token_client.close()
+            return access_token
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(f"OAuth token request failed: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"Failed to obtain OAuth token: HTTP {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"OAuth token request error: {str(e)}")
+            raise
 
     def _get_api_url(self, endpoint: str) -> str:
         """Get full API URL for endpoint."""
@@ -57,6 +139,18 @@ class QlikCloudAPI:
         """Make HTTP request to Qlik Cloud REST API."""
         try:
             url = self._get_api_url(endpoint)
+            
+            # Update Authorization header if using OAuth (token may have been refreshed)
+            if self.config.uses_oauth():
+                try:
+                    token = self._get_oauth_token()
+                    # Update headers for this request
+                    request_headers = kwargs.get("headers", {}).copy()
+                    request_headers["Authorization"] = f"Bearer {token}"
+                    kwargs["headers"] = request_headers
+                except Exception as e:
+                    logger.error(f"Failed to get OAuth token: {str(e)}")
+                    return {"error": f"OAuth authentication failed: {str(e)}"}
             
             response = self.client.request(method, url, **kwargs)
             response.raise_for_status()

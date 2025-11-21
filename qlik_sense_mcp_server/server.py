@@ -56,7 +56,8 @@ class QlikSenseMCPServer:
             except Exception as e:
                 # API client will be None, tools will return errors
                 logger.error(f"Failed to initialize Cloud API: {e}", exc_info=True)
-                logger.error(f"Config check - Server URL: {self.config.server_url}, Has API Key: {bool(self.config.api_key)}")
+                auth_method = "OAuth2 M2M" if self.config.uses_oauth() else ("API Key" if self.config.uses_api_key() else "None")
+                logger.error(f"Config check - Server URL: {self.config.server_url}, Auth Method: {auth_method}")
 
         self.server = Server("qlik-sense-mcp-server")
         self._setup_handlers()
@@ -65,8 +66,10 @@ class QlikSenseMCPServer:
         """Validate that required configuration is present."""
         if not self.config:
             return False
-        # Qlik Cloud requires API key
-        return bool(self.config.server_url and self.config.api_key)
+        # Qlik Cloud requires either OAuth2 M2M credentials or API key
+        has_server_url = bool(self.config.server_url)
+        has_auth = self.config.uses_oauth() or self.config.uses_api_key()
+        return bool(has_server_url and has_auth)
 
     def _setup_handlers(self):
         """Setup MCP server handlers."""
@@ -134,9 +137,12 @@ class QlikSenseMCPServer:
                     "message": "Please set the following environment variables:",
                     "required": [
                         "QLIK_SERVER_URL - Qlik Cloud server URL (e.g., https://tenant.qlikcloud.com)",
-                        "QLIK_API_KEY - API key for authentication"
+                        "Either:",
+                        "  - QLIK_OAUTH_CLIENT_ID and QLIK_OAUTH_CLIENT_SECRET (OAuth2 M2M, preferred)",
+                        "  - QLIK_API_KEY (API key authentication, fallback)"
                     ],
-                    "example": "uvx --with-env QLIK_SERVER_URL=https://tenant.qlikcloud.com --with-env QLIK_API_KEY=your-api-key qlik-sense-mcp-server"
+                    "example_oauth": "uvx --with-env QLIK_SERVER_URL=https://tenant.qlikcloud.com --with-env QLIK_OAUTH_CLIENT_ID=your-client-id --with-env QLIK_OAUTH_CLIENT_SECRET=your-client-secret qlik-sense-mcp-server",
+                    "example_api_key": "uvx --with-env QLIK_SERVER_URL=https://tenant.qlikcloud.com --with-env QLIK_API_KEY=your-api-key qlik-sense-mcp-server"
                 }
                 return [TextContent(type="text", text=json.dumps(error_msg, indent=2))]
             """
@@ -354,10 +360,23 @@ CONFIGURATION:
     QLIK_SERVER_URL       - Qlik Cloud server URL (required)
                            Example: https://tenant.qlikcloud.com
 
-    QLIK_API_KEY          - API key for authentication (required)
+    Authentication (choose one method):
+    
+    Option 1 - OAuth2 M2M (preferred):
+    QLIK_OAUTH_CLIENT_ID     - OAuth2 M2M client ID (required if not using API key)
+    QLIK_OAUTH_CLIENT_SECRET - OAuth2 M2M client secret (required if not using API key)
+    
+    Option 2 - API Key (fallback):
+    QLIK_API_KEY          - API key for authentication (required if not using OAuth2)
                            Example: your-api-key
 
-EXAMPLE:
+EXAMPLE (OAuth2 M2M):
+    export QLIK_SERVER_URL=https://tenant.qlikcloud.com
+    export QLIK_OAUTH_CLIENT_ID=your-client-id
+    export QLIK_OAUTH_CLIENT_SECRET=your-client-secret
+    qlik-sense-mcp-server
+
+EXAMPLE (API Key):
     export QLIK_SERVER_URL=https://tenant.qlikcloud.com
     export QLIK_API_KEY=your-api-key
     qlik-sense-mcp-server
