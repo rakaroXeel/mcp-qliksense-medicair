@@ -256,6 +256,133 @@ async def get_spaces(
 
 
 @fastmcp.tool()
+async def get_app_tables(app_id: str) -> str:
+    """
+    Get list of tables in a Qlik Cloud application with field counts and row counts.
+    
+    Args:
+        app_id: Application ID
+    
+    Returns:
+        JSON string with list of tables
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(mcp_server.cloud_api.get_app_tables, app_id)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_app_tables tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_app_fields(app_id: str, table_name: Optional[str] = None) -> str:
+    """
+    Get list of fields in a Qlik Cloud application, optionally filtered by table name.
+    
+    Args:
+        app_id: Application ID
+        table_name: Optional table name to filter fields
+    
+    Returns:
+        JSON string with list of fields
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(mcp_server.cloud_api.get_app_fields, app_id, table_name)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_app_fields tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_field_values(app_id: str, field_name: str, limit: int = 100) -> str:
+    """
+    Get distinct values of a specific field from a Qlik Cloud application.
+    
+    Args:
+        app_id: Application ID
+        field_name: Name of the field
+        limit: Maximum number of values to return (default: 100)
+    
+    Returns:
+        JSON string with field values
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        result = await asyncio.to_thread(mcp_server.cloud_api.get_field_values, app_id, field_name, limit)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_field_values tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
+async def get_app_data(
+    app_id: str,
+    table_name: Optional[str] = None,
+    dimensions: Optional[List[str]] = None,
+    measures: Optional[List[str]] = None,
+    limit: int = 1000,
+    offset: int = 0
+) -> str:
+    """
+    Get data from a Qlik Cloud application. Can read from a table or create a custom hypercube.
+    
+    Args:
+        app_id: Application ID
+        table_name: Name of the table to read data from (if provided, reads table data)
+        dimensions: List of dimension field names (for custom hypercube)
+        measures: List of measure expressions (for custom hypercube)
+        limit: Maximum number of rows to return (default: 1000)
+        offset: Number of rows to skip for pagination (default: 0)
+    
+    Returns:
+        JSON string with data
+    """
+    if mcp_server is None or not mcp_server.config_valid:
+        return json.dumps({"error": "MCP Server not configured"}, indent=2)
+    
+    if not mcp_server.cloud_api:
+        return json.dumps({"error": "Cloud API not initialized"}, indent=2)
+    
+    try:
+        def _get_app_data():
+            # If table_name is provided, read table data
+            if table_name:
+                return mcp_server.cloud_api.get_table_data(app_id, table_name, limit, offset)
+            # If dimensions/measures are provided, create custom hypercube
+            elif dimensions or measures:
+                dims = dimensions or []
+                meas = measures or []
+                return mcp_server.cloud_api.create_hypercube(app_id, dims, meas, None, limit)
+            else:
+                return {"error": "Either table_name or dimensions/measures must be provided"}
+        
+        result = await asyncio.to_thread(_get_app_data)
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in get_app_data tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@fastmcp.tool()
 async def health_check() -> str:
     """
     Check the health status of the Qlik Sense MCP Server.
@@ -386,6 +513,10 @@ async def list_tools():
     tools = [
         "get_apps",
         "get_app_details",
+        "get_app_tables",
+        "get_app_fields",
+        "get_field_values",
+        "get_app_data",
         "get_datasets",
         "get_dataset",
         "get_spaces",

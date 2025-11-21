@@ -116,11 +116,63 @@ class QlikSenseMCPServer:
                 ),
                 Tool(
                     name="get_app_details",
-                    description="Get application details including metadata and information.",
+                    description="Get application details including metadata, tables, and fields information.",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "app_id": {"type": "string", "description": "Application ID"}
+                        },
+                        "required": ["app_id"]
+                    }
+                ),
+                Tool(
+                    name="get_app_tables",
+                    description="Get list of tables in a Qlik Cloud application with field counts and row counts.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "app_id": {"type": "string", "description": "Application ID"}
+                        },
+                        "required": ["app_id"]
+                    }
+                ),
+                Tool(
+                    name="get_app_fields",
+                    description="Get list of fields in a Qlik Cloud application, optionally filtered by table name.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "app_id": {"type": "string", "description": "Application ID"},
+                            "table_name": {"type": "string", "description": "Optional table name to filter fields"}
+                        },
+                        "required": ["app_id"]
+                    }
+                ),
+                Tool(
+                    name="get_field_values",
+                    description="Get distinct values of a specific field from a Qlik Cloud application.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "app_id": {"type": "string", "description": "Application ID"},
+                            "field_name": {"type": "string", "description": "Name of the field"},
+                            "limit": {"type": "integer", "description": "Maximum number of values to return (default: 100)", "default": 100}
+                        },
+                        "required": ["app_id", "field_name"]
+                    }
+                ),
+                Tool(
+                    name="get_app_data",
+                    description="Get data from a Qlik Cloud application. Can read from a table or create a custom hypercube with dimensions and measures.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "app_id": {"type": "string", "description": "Application ID"},
+                            "table_name": {"type": "string", "description": "Name of the table to read data from (if provided, reads table data)"},
+                            "dimensions": {"type": "array", "items": {"type": "string"}, "description": "List of dimension field names (for custom hypercube)"},
+                            "measures": {"type": "array", "items": {"type": "string"}, "description": "List of measure expressions (for custom hypercube)"},
+                            "limit": {"type": "integer", "description": "Maximum number of rows to return (default: 1000)", "default": 1000},
+                            "offset": {"type": "integer", "description": "Number of rows to skip for pagination (default: 0)", "default": 0}
                         },
                         "required": ["app_id"]
                     }
@@ -229,6 +281,14 @@ class QlikSenseMCPServer:
                             # Get app metadata if available
                             metadata_result = self.cloud_api.get_app_metadata(app_id)
                             
+                            # Get tables information
+                            tables_result = self.cloud_api.get_app_tables(app_id)
+                            tables_info = tables_result if "error" not in tables_result else None
+                            
+                            # Get fields information (summary)
+                            fields_result = self.cloud_api.get_app_fields(app_id)
+                            fields_info = fields_result if "error" not in fields_result else None
+                            
                             result = {
                                 "app_id": app_id,
                                 "name": app_result.get("name"),
@@ -238,8 +298,21 @@ class QlikSenseMCPServer:
                                 "createdAt": app_result.get("createdAt"),
                                 "updatedAt": app_result.get("updatedAt"),
                                 "published": app_result.get("published", False),
-                                "metadata": metadata_result if "error" not in metadata_result else None
+                                "metadata": metadata_result if "error" not in metadata_result else None,
+                                "tables": tables_info,
+                                "fields_summary": {
+                                    "total_fields": fields_info.get("total_fields", 0) if fields_info else 0,
+                                    "field_count_by_table": {}
+                                } if fields_info else None
                             }
+                            
+                            # Add field count by table if available
+                            if fields_info and fields_info.get("fields"):
+                                field_count_by_table = {}
+                                for field in fields_info["fields"]:
+                                    table_name = field.get("table", "Unknown")
+                                    field_count_by_table[table_name] = field_count_by_table.get(table_name, 0) + 1
+                                result["fields_summary"]["field_count_by_table"] = field_count_by_table
                             
                             return result
                         except Exception as e:
@@ -249,6 +322,73 @@ class QlikSenseMCPServer:
                     return [
                         TextContent(type="text", text=json.dumps(details, indent=2, ensure_ascii=False))
                     ]
+
+                elif name == "get_app_tables":
+                    app_id = arguments.get("app_id")
+                    
+                    if not self.cloud_api:
+                        return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
+                    
+                    def _get_app_tables():
+                        return self.cloud_api.get_app_tables(app_id)
+                    
+                    result = await asyncio.to_thread(_get_app_tables)
+                    return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+                elif name == "get_app_fields":
+                    app_id = arguments.get("app_id")
+                    table_name = arguments.get("table_name")
+                    
+                    if not self.cloud_api:
+                        return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
+                    
+                    def _get_app_fields():
+                        return self.cloud_api.get_app_fields(app_id, table_name)
+                    
+                    result = await asyncio.to_thread(_get_app_fields)
+                    return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+                elif name == "get_field_values":
+                    app_id = arguments.get("app_id")
+                    field_name = arguments.get("field_name")
+                    limit = arguments.get("limit", 100)
+                    
+                    if not self.cloud_api:
+                        return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
+                    
+                    def _get_field_values():
+                        return self.cloud_api.get_field_values(app_id, field_name, limit)
+                    
+                    result = await asyncio.to_thread(_get_field_values)
+                    return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+                elif name == "get_app_data":
+                    app_id = arguments.get("app_id")
+                    table_name = arguments.get("table_name")
+                    dimensions = arguments.get("dimensions")
+                    measures = arguments.get("measures")
+                    limit = arguments.get("limit", 1000)
+                    offset = arguments.get("offset", 0)
+                    
+                    if not self.cloud_api:
+                        return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
+                    
+                    def _get_app_data():
+                        # If table_name is provided, read table data
+                        if table_name:
+                            return self.cloud_api.get_table_data(app_id, table_name, limit, offset)
+                        # If dimensions/measures are provided, create custom hypercube
+                        elif dimensions or measures:
+                            if not dimensions:
+                                dimensions = []
+                            if not measures:
+                                measures = []
+                            return self.cloud_api.create_hypercube(app_id, dimensions, measures, None, limit)
+                        else:
+                            return {"error": "Either table_name or dimensions/measures must be provided"}
+                    
+                    result = await asyncio.to_thread(_get_app_data)
+                    return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
                 elif name == "health_check":
                     """Check server health status."""
@@ -280,7 +420,7 @@ class QlikSenseMCPServer:
 
                 else:
                     # Unknown tool - Enterprise-only tools are not available in Qlik Cloud
-                    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}. Available tools: get_apps, get_app_details, health_check"}, indent=2, ensure_ascii=False))]
+                    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}. Available tools: get_apps, get_app_details, get_app_tables, get_app_fields, get_field_values, get_app_data, health_check"}, indent=2, ensure_ascii=False))]
 
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2, ensure_ascii=False))]

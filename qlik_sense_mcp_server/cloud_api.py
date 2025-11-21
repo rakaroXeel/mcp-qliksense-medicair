@@ -198,6 +198,287 @@ class QlikCloudAPI:
         """Get app data connections."""
         return self._make_request("GET", f"apps/{app_id}/data/connections")
 
+    def get_app_tables(self, app_id: str) -> Dict[str, Any]:
+        """Get list of tables in the app from metadata."""
+        metadata = self.get_app_metadata(app_id)
+        if "error" in metadata:
+            return metadata
+        
+        # Extract tables from metadata
+        tables = []
+        if isinstance(metadata, dict):
+            # Metadata structure may vary, try common paths
+            qv_tables = metadata.get("qvTables", [])
+            if qv_tables:
+                for table in qv_tables:
+                    table_info = {
+                        "name": table.get("qName", ""),
+                        "fields": len(table.get("qFields", [])),
+                        "rows": table.get("qNoOfRows", 0)
+                    }
+                    tables.append(table_info)
+            else:
+                # Try alternative structure
+                tables_data = metadata.get("tables", [])
+                if tables_data:
+                    tables = tables_data
+        
+        return {
+            "app_id": app_id,
+            "tables": tables,
+            "total_tables": len(tables)
+        }
+
+    def get_app_fields(self, app_id: str, table_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get list of fields in the app, optionally filtered by table."""
+        metadata = self.get_app_metadata(app_id)
+        if "error" in metadata:
+            return metadata
+        
+        fields = []
+        if isinstance(metadata, dict):
+            # Extract fields from metadata
+            qv_tables = metadata.get("qvTables", [])
+            if qv_tables:
+                for table in qv_tables:
+                    table_fields = table.get("qFields", [])
+                    for field in table_fields:
+                        field_info = {
+                            "name": field.get("qName", ""),
+                            "table": table.get("qName", ""),
+                            "type": field.get("qType", "unknown")
+                        }
+                        if not table_name or field_info["table"] == table_name:
+                            fields.append(field_info)
+        
+        result = {
+            "app_id": app_id,
+            "fields": fields,
+            "total_fields": len(fields)
+        }
+        if table_name:
+            result["table_name"] = table_name
+        
+        return result
+
+    def create_hypercube(self, app_id: str, dimensions: List[str], 
+                        measures: List[str], filters: Optional[List[Dict[str, Any]]] = None,
+                        max_rows: int = 1000) -> Dict[str, Any]:
+        """
+        Create hypercube and get data from app.
+        
+        Args:
+            app_id: Application ID
+            dimensions: List of dimension field names
+            measures: List of measure expressions
+            filters: Optional list of filter objects
+            max_rows: Maximum number of rows to return
+        
+        Returns:
+            Hypercube data
+        """
+        # Build hypercube definition
+        hypercube_def = {
+            "qDimensions": [
+                {
+                    "qDef": {
+                        "qFieldDefs": [dim]
+                    },
+                    "qNullSuppression": False
+                }
+                for dim in dimensions
+            ],
+            "qMeasures": [
+                {
+                    "qDef": {
+                        "qDef": measure
+                    }
+                }
+                for measure in measures
+            ],
+            "qInitialDataFetch": [
+                {
+                    "qTop": 0,
+                    "qLeft": 0,
+                    "qHeight": max_rows,
+                    "qWidth": len(dimensions) + len(measures)
+                }
+            ],
+            "qMode": "S"
+        }
+        
+        # Add filters if provided
+        if filters:
+            hypercube_def["qInterColumnSortOrder"] = []
+            # Filters would be applied here if supported
+        
+        payload = {
+            "method": "CreateHyperCube",
+            "params": [hypercube_def]
+        }
+        
+        # Try POST to hypercube endpoint
+        return self._make_request("POST", f"apps/{app_id}/data/hypercube", json=payload)
+
+    def get_field_values(self, app_id: str, field_name: str, limit: int = 100) -> Dict[str, Any]:
+        """
+        Get distinct values of a field.
+        
+        Args:
+            app_id: Application ID
+            field_name: Name of the field
+            limit: Maximum number of values to return
+        
+        Returns:
+            List of distinct field values
+        """
+        # Create a simple hypercube with one dimension to get field values
+        hypercube_def = {
+            "qDimensions": [
+                {
+                    "qDef": {
+                        "qFieldDefs": [field_name]
+                    },
+                    "qNullSuppression": False
+                }
+            ],
+            "qMeasures": [],
+            "qInitialDataFetch": [
+                {
+                    "qTop": 0,
+                    "qLeft": 0,
+                    "qHeight": limit,
+                    "qWidth": 1
+                }
+            ],
+            "qMode": "S"
+        }
+        
+        payload = {
+            "method": "CreateHyperCube",
+            "params": [hypercube_def]
+        }
+        
+        result = self._make_request("POST", f"apps/{app_id}/data/hypercube", json=payload)
+        
+        # Extract values from hypercube response
+        if "error" not in result:
+            values = []
+            # Parse hypercube response to extract values
+            # Structure may vary, try common paths
+            if isinstance(result, dict):
+                q_data_pages = result.get("qDataPages", [])
+                if q_data_pages:
+                    for page in q_data_pages:
+                        q_matrix = page.get("qMatrix", [])
+                        for row in q_matrix:
+                            if row:
+                                cell = row[0] if row else None
+                                if cell:
+                                    value = cell.get("qText") or cell.get("qNum")
+                                    if value is not None:
+                                        values.append(value)
+            
+            return {
+                "app_id": app_id,
+                "field_name": field_name,
+                "values": values,
+                "count": len(values)
+            }
+        
+        return result
+
+    def get_table_data(self, app_id: str, table_name: str, limit: int = 1000, 
+                      offset: int = 0) -> Dict[str, Any]:
+        """
+        Get data from a specific table.
+        
+        Args:
+            app_id: Application ID
+            table_name: Name of the table
+            limit: Maximum number of rows to return
+            offset: Number of rows to skip
+        
+        Returns:
+            Table data
+        """
+        # First get fields for the table
+        fields_result = self.get_app_fields(app_id, table_name)
+        if "error" in fields_result:
+            return fields_result
+        
+        fields = fields_result.get("fields", [])
+        if not fields:
+            return {"error": f"Table '{table_name}' not found or has no fields"}
+        
+        # Get field names
+        field_names = [f["name"] for f in fields]
+        
+        # Limit number of fields to avoid too wide tables
+        max_fields = 20
+        if len(field_names) > max_fields:
+            field_names = field_names[:max_fields]
+        
+        # Create hypercube with all table fields as dimensions
+        hypercube_def = {
+            "qDimensions": [
+                {
+                    "qDef": {
+                        "qFieldDefs": [field]
+                    },
+                    "qNullSuppression": False
+                }
+                for field in field_names
+            ],
+            "qMeasures": [],
+            "qInitialDataFetch": [
+                {
+                    "qTop": offset,
+                    "qLeft": 0,
+                    "qHeight": limit,
+                    "qWidth": len(field_names)
+                }
+            ],
+            "qMode": "S"
+        }
+        
+        payload = {
+            "method": "CreateHyperCube",
+            "params": [hypercube_def]
+        }
+        
+        result = self._make_request("POST", f"apps/{app_id}/data/hypercube", json=payload)
+        
+        # Transform hypercube data to table format
+        if "error" not in result:
+            rows = []
+            if isinstance(result, dict):
+                q_data_pages = result.get("qDataPages", [])
+                if q_data_pages:
+                    for page in q_data_pages:
+                        q_matrix = page.get("qMatrix", [])
+                        for row_data in q_matrix:
+                            row = {}
+                            for i, cell in enumerate(row_data):
+                                if i < len(field_names):
+                                    field_name = field_names[i]
+                                    value = cell.get("qText") or cell.get("qNum")
+                                    row[field_name] = value
+                            if row:
+                                rows.append(row)
+            
+            return {
+                "app_id": app_id,
+                "table_name": table_name,
+                "fields": field_names,
+                "rows": rows,
+                "row_count": len(rows),
+                "limit": limit,
+                "offset": offset
+            }
+        
+        return result
+
     # Spaces
     def get_spaces(self, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         """Get list of spaces."""
