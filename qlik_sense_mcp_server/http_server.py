@@ -1,6 +1,7 @@
 """HTTP wrapper for Qlik Sense MCP Server to enable web service deployment."""
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -19,11 +20,54 @@ from .server import QlikSenseMCPServer
 
 logger = logging.getLogger(__name__)
 
+# Global server instance
+mcp_server: Optional[QlikSenseMCPServer] = None
+
+# FastMCP instance for Streamable HTTP transport
+# streamable_http_path="/" means the app handles requests at the mount root
+fastmcp = FastMCP("Qlik Sense MCP Server", streamable_http_path="/")
+
+
+# Lifespan context manager for FastAPI
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan including FastMCP session manager."""
+    global mcp_server
+    
+    # Initialize MCP server
+    try:
+        mcp_server = QlikSenseMCPServer()
+        logger.info("MCP Server initialized successfully")
+        if mcp_server.config_valid:
+            logger.info(f"Connected to Qlik Cloud: {mcp_server.config.server_url}")
+            if mcp_server.cloud_api:
+                logger.info("Cloud API client initialized successfully")
+            else:
+                logger.error("Cloud API client failed to initialize - check configuration and API key")
+        else:
+            logger.warning("MCP Server configuration is invalid - check QLIK_SERVER_URL and QLIK_API_KEY")
+    except Exception as e:
+        logger.error(f"Failed to initialize MCP Server: {e}", exc_info=True)
+        mcp_server = None
+    
+    # Start FastMCP session manager
+    async with fastmcp.session_manager.run():
+        logger.info("FastMCP Streamable HTTP session manager started")
+        yield  # Application runs here
+        logger.info("Shutting down FastMCP session manager")
+
+
 app = FastAPI(
     title="Qlik Sense MCP Server HTTP API",
     description="HTTP wrapper for Qlik Sense MCP Server tools",
-    version="1.3.4"
+    version="1.3.4",
+    lifespan=lifespan
 )
+
+# Mount FastMCP Streamable HTTP app on /mcp
+# This must be done after FastAPI app creation but before requests are handled
+app.mount("/mcp", fastmcp.streamable_http_app())
+logger.info("FastMCP Streamable HTTP endpoint mounted on /mcp")
 
 # Enable CORS for web clients
 app.add_middleware(
@@ -34,12 +78,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global server instance
-mcp_server: Optional[QlikSenseMCPServer] = None
-
-# FastMCP instance for Streamable HTTP transport
-# streamable_http_path="/" means the app handles requests at the mount root
-fastmcp = FastMCP("Qlik Sense MCP Server", streamable_http_path="/")
 
 
 class ToolRequest(BaseModel):
@@ -216,29 +254,6 @@ async def get_spaces(
         return json.dumps({"error": str(e)}, indent=2)
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize MCP server on startup."""
-    global mcp_server
-    try:
-        # Initialize in background to avoid blocking startup
-        mcp_server = QlikSenseMCPServer()
-        logger.info("MCP Server initialized successfully")
-        if mcp_server.config_valid:
-            logger.info(f"Connected to Qlik Cloud: {mcp_server.config.server_url}")
-            if mcp_server.cloud_api:
-                logger.info("Cloud API client initialized successfully")
-            else:
-                logger.error("Cloud API client failed to initialize - check configuration and API key")
-        else:
-            logger.warning("MCP Server configuration is invalid - check QLIK_SERVER_URL and QLIK_API_KEY")
-        
-        # Mount FastMCP Streamable HTTP app on /mcp after server initialization
-        app.mount("/mcp", fastmcp.streamable_http_app())
-        logger.info("FastMCP Streamable HTTP endpoint mounted on /mcp")
-    except Exception as e:
-        logger.error(f"Failed to initialize MCP Server: {e}", exc_info=True)
-        mcp_server = None
 
 
 @app.get("/", response_model=Dict[str, str])
