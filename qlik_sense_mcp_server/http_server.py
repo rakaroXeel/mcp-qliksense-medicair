@@ -255,6 +255,48 @@ async def get_spaces(
         return json.dumps({"error": str(e)}, indent=2)
 
 
+@fastmcp.tool()
+async def health_check() -> str:
+    """
+    Check the health status of the Qlik Sense MCP Server.
+    Returns server status, configuration validity, and authentication method.
+    
+    Returns:
+        JSON string with health status information
+    """
+    if mcp_server is None:
+        return json.dumps({
+            "status": "error",
+            "message": "MCP Server not initialized"
+        }, indent=2)
+    
+    try:
+        health_status = {
+            "status": "healthy" if mcp_server.config_valid else "unhealthy",
+            "server_url": mcp_server.config.server_url if mcp_server.config else None,
+            "config_valid": mcp_server.config_valid,
+            "has_oauth": bool(mcp_server.config and mcp_server.config.oauth_client_id and mcp_server.config.oauth_client_secret) if mcp_server.config else False,
+            "auth_method": "OAuth2 M2M" if mcp_server.config_valid else None,
+            "cloud_api_initialized": mcp_server.cloud_api is not None
+        }
+        
+        # Try to get OAuth token if API is initialized (to verify authentication works)
+        if mcp_server.cloud_api:
+            try:
+                token = mcp_server.cloud_api._get_oauth_token()
+                health_status["oauth_token_valid"] = bool(token)
+            except Exception as e:
+                health_status["oauth_token_valid"] = False
+                health_status["oauth_error"] = str(e)
+        else:
+            health_status["oauth_token_valid"] = False
+        
+        return json.dumps(health_status, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error in health_check tool: {e}", exc_info=True)
+        return json.dumps({"error": str(e)}, indent=2)
+
+
 
 
 @app.get("/", response_model=Dict[str, str])
@@ -346,7 +388,8 @@ async def list_tools():
         "get_app_details",
         "get_datasets",
         "get_dataset",
-        "get_spaces"
+        "get_spaces",
+        "health_check"
     ]
     
     return {

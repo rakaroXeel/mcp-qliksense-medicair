@@ -124,6 +124,15 @@ class QlikSenseMCPServer:
                         },
                         "required": ["app_id"]
                     }
+                ),
+                Tool(
+                    name="health_check",
+                    description="Check the health status of the Qlik Sense MCP Server. Returns server status, configuration validity, and authentication method.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
                 )
                 ]
             return tools_list
@@ -241,9 +250,37 @@ class QlikSenseMCPServer:
                         TextContent(type="text", text=json.dumps(details, indent=2, ensure_ascii=False))
                     ]
 
+                elif name == "health_check":
+                    """Check server health status."""
+                    try:
+                        health_status = {
+                            "status": "healthy" if self.config_valid else "unhealthy",
+                            "server_url": self.config.server_url if self.config else None,
+                            "config_valid": self.config_valid,
+                            "has_oauth": bool(self.config and self.config.oauth_client_id and self.config.oauth_client_secret) if self.config else False,
+                            "auth_method": "OAuth2 M2M" if self.config_valid else None,
+                            "cloud_api_initialized": self.cloud_api is not None
+                        }
+                        
+                        # Try to get OAuth token if API is initialized (to verify authentication works)
+                        if self.cloud_api:
+                            try:
+                                # This will use cached token or fetch new one
+                                token = self.cloud_api._get_oauth_token()
+                                health_status["oauth_token_valid"] = bool(token)
+                            except Exception as e:
+                                health_status["oauth_token_valid"] = False
+                                health_status["oauth_error"] = str(e)
+                        else:
+                            health_status["oauth_token_valid"] = False
+                        
+                        return [TextContent(type="text", text=json.dumps(health_status, indent=2, ensure_ascii=False))]
+                    except Exception as e:
+                        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2, ensure_ascii=False))]
+
                 else:
                     # Unknown tool - Enterprise-only tools are not available in Qlik Cloud
-                    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}. Available tools: get_apps, get_app_details"}, indent=2, ensure_ascii=False))]
+                    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}. Available tools: get_apps, get_app_details, health_check"}, indent=2, ensure_ascii=False))]
 
             except Exception as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2, ensure_ascii=False))]
