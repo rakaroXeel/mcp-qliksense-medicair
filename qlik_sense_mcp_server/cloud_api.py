@@ -18,12 +18,6 @@ class QlikCloudAPI:
         self.config = config
         self.base_url = config.server_url.rstrip('/')
         
-        # Validate authentication method
-        if not config.uses_oauth() and not config.uses_api_key():
-            raise ValueError(
-                "Either OAuth2 M2M credentials or API key is required for Qlik Cloud authentication"
-            )
-        
         # Setup SSL verification (Qlik Cloud uses standard SSL)
         verify_ssl = config.verify_ssl
 
@@ -38,26 +32,20 @@ class QlikCloudAPI:
         self._oauth_token: Optional[str] = None
         self._oauth_token_expires_at: float = 0.0
         
-        # Setup headers - will be updated dynamically based on auth method
+        # Setup headers - Authorization will be added per request via OAuth token
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
-        # Create httpx client (headers will be updated per request if using OAuth)
+        # Create httpx client (headers will be updated per request with OAuth token)
         self.client = httpx.Client(
             verify=verify_ssl,
             timeout=timeout_val,
             headers=headers,
         )
         
-        # Log authentication method
-        if config.uses_oauth():
-            logger.info("Using OAuth2 M2M authentication for Qlik Cloud")
-        else:
-            logger.info("Using API key authentication for Qlik Cloud")
-            # Set API key header immediately if using API key
-            self.client.headers["Authorization"] = f"Bearer {config.api_key}"
+        logger.info("Using OAuth2 M2M authentication for Qlik Cloud")
     
     def _get_oauth_token(self) -> str:
         """
@@ -68,11 +56,8 @@ class QlikCloudAPI:
             Access token string
             
         Raises:
-            ValueError: If OAuth credentials are not configured
             Exception: If token request fails
         """
-        if not self.config.uses_oauth():
-            raise ValueError("OAuth2 credentials not configured")
         
         # Check if cached token is still valid (with 60 second buffer)
         current_time = time.time()
@@ -140,17 +125,16 @@ class QlikCloudAPI:
         try:
             url = self._get_api_url(endpoint)
             
-            # Update Authorization header if using OAuth (token may have been refreshed)
-            if self.config.uses_oauth():
-                try:
-                    token = self._get_oauth_token()
-                    # Update headers for this request
-                    request_headers = kwargs.get("headers", {}).copy()
-                    request_headers["Authorization"] = f"Bearer {token}"
-                    kwargs["headers"] = request_headers
-                except Exception as e:
-                    logger.error(f"Failed to get OAuth token: {str(e)}")
-                    return {"error": f"OAuth authentication failed: {str(e)}"}
+            # Get OAuth token (may be cached or refreshed)
+            try:
+                token = self._get_oauth_token()
+                # Update headers for this request
+                request_headers = kwargs.get("headers", {}).copy()
+                request_headers["Authorization"] = f"Bearer {token}"
+                kwargs["headers"] = request_headers
+            except Exception as e:
+                logger.error(f"Failed to get OAuth token: {str(e)}")
+                return {"error": f"OAuth authentication failed: {str(e)}"}
             
             response = self.client.request(method, url, **kwargs)
             response.raise_for_status()

@@ -41,12 +41,11 @@ async def lifespan(app: FastAPI):
         if mcp_server.config_valid:
             logger.info(f"Connected to Qlik Cloud: {mcp_server.config.server_url}")
             if mcp_server.cloud_api:
-                auth_method = "OAuth2 M2M" if mcp_server.config.uses_oauth() else ("API Key" if mcp_server.config.uses_api_key() else "None")
-                logger.info(f"Cloud API client initialized successfully (Auth: {auth_method})")
+                logger.info("Cloud API client initialized successfully (Auth: OAuth2 M2M)")
             else:
-                logger.error("Cloud API client failed to initialize - check configuration (OAuth2 M2M or API key)")
+                logger.error("Cloud API client failed to initialize - check OAuth2 M2M configuration")
         else:
-            logger.warning("MCP Server configuration is invalid - check QLIK_SERVER_URL and authentication credentials (QLIK_OAUTH_CLIENT_ID/QLIK_OAUTH_CLIENT_SECRET or QLIK_API_KEY)")
+            logger.warning("MCP Server configuration is invalid - check QLIK_SERVER_URL, QLIK_OAUTH_CLIENT_ID and QLIK_OAUTH_CLIENT_SECRET")
     except Exception as e:
         logger.error(f"Failed to initialize MCP Server: {e}", exc_info=True)
         mcp_server = None
@@ -91,7 +90,6 @@ class HealthResponse(BaseModel):
     """Health check response."""
     status: str
     server_url: Optional[str] = None
-    has_api_key: bool = False
     has_oauth: bool = False
     auth_method: Optional[str] = None
     config_valid: bool = False
@@ -283,18 +281,12 @@ async def health_check():
             config_valid=False
         )
     
-    auth_method = None
-    if mcp_server.config:
-        if mcp_server.config.uses_oauth():
-            auth_method = "OAuth2 M2M"
-        elif mcp_server.config.uses_api_key():
-            auth_method = "API Key"
+    auth_method = "OAuth2 M2M" if mcp_server.config and mcp_server.config_valid else None
     
     return HealthResponse(
         status="healthy" if mcp_server.config_valid else "unhealthy",
         server_url=mcp_server.config.server_url if mcp_server.config else None,
-        has_api_key=bool(mcp_server.config.api_key) if mcp_server.config else False,
-        has_oauth=bool(mcp_server.config.uses_oauth()) if mcp_server.config else False,
+        has_oauth=bool(mcp_server.config and mcp_server.config.oauth_client_id and mcp_server.config.oauth_client_secret) if mcp_server.config else False,
         auth_method=auth_method,
         config_valid=mcp_server.config_valid
     )
@@ -309,14 +301,13 @@ async def ping_cloud():
     if not mcp_server.config_valid:
         raise HTTPException(
             status_code=503, 
-            detail="MCP Server configuration invalid. Check QLIK_SERVER_URL and authentication credentials (QLIK_OAUTH_CLIENT_ID/QLIK_OAUTH_CLIENT_SECRET or QLIK_API_KEY)"
+            detail="MCP Server configuration invalid. Check QLIK_SERVER_URL, QLIK_OAUTH_CLIENT_ID and QLIK_OAUTH_CLIENT_SECRET"
         )
     
     if not mcp_server.cloud_api:
         error_msg = "Cloud API not initialized"
         if mcp_server.config:
-            auth_method = "OAuth2 M2M" if mcp_server.config.uses_oauth() else ("API Key" if mcp_server.config.uses_api_key() else "None")
-            error_msg += f". Server URL: {mcp_server.config.server_url}, Auth Method: {auth_method}"
+            error_msg += f". Server URL: {mcp_server.config.server_url}, Auth Method: OAuth2 M2M"
         raise HTTPException(status_code=503, detail=error_msg)
     
     try:
@@ -429,8 +420,7 @@ async def get_datasets(
     if not mcp_server.cloud_api:
         error_detail = "Cloud API not initialized"
         if mcp_server.config:
-            auth_method = "OAuth2 M2M" if mcp_server.config.uses_oauth() else ("API Key" if mcp_server.config.uses_api_key() else "None")
-            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: {auth_method}, Config Valid: {mcp_server.config_valid}"
+            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: OAuth2 M2M, Config Valid: {mcp_server.config_valid}"
         raise HTTPException(status_code=503, detail=error_detail)
     
     try:
@@ -455,8 +445,7 @@ async def get_dataset(dataset_id: str):
     if not mcp_server.cloud_api:
         error_detail = "Cloud API not initialized"
         if mcp_server.config:
-            auth_method = "OAuth2 M2M" if mcp_server.config.uses_oauth() else ("API Key" if mcp_server.config.uses_api_key() else "None")
-            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: {auth_method}, Config Valid: {mcp_server.config_valid}"
+            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: OAuth2 M2M, Config Valid: {mcp_server.config_valid}"
         raise HTTPException(status_code=503, detail=error_detail)
     
     try:
@@ -476,8 +465,7 @@ async def get_spaces(limit: int = 100, offset: int = 0):
     if not mcp_server.cloud_api:
         error_detail = "Cloud API not initialized"
         if mcp_server.config:
-            auth_method = "OAuth2 M2M" if mcp_server.config.uses_oauth() else ("API Key" if mcp_server.config.uses_api_key() else "None")
-            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: {auth_method}, Config Valid: {mcp_server.config_valid}"
+            error_detail += f". Server URL: {mcp_server.config.server_url}, Auth Method: OAuth2 M2M, Config Valid: {mcp_server.config_valid}"
         raise HTTPException(status_code=503, detail=error_detail)
     
     try:
