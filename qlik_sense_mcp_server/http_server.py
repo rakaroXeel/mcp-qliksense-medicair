@@ -86,6 +86,15 @@ class ToolRequest(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
 
 
+class DataRequest(BaseModel):
+    """Request model for getting app data."""
+    table_name: Optional[str] = None
+    dimensions: Optional[List[str]] = None
+    measures: Optional[List[str]] = None
+    limit: int = 1000
+    offset: int = 0
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
     status: str
@@ -660,6 +669,56 @@ async def get_app_details(app_id: str):
     return await execute_tool(ToolRequest(
         tool_name="get_app_details",
         arguments={"app_id": app_id}
+    ))
+
+
+@app.get("/apps/{app_id}/tables")
+async def get_app_tables(app_id: str):
+    """Get list of tables in an application."""
+    return await execute_tool(ToolRequest(
+        tool_name="get_app_tables",
+        arguments={"app_id": app_id}
+    ))
+
+
+@app.get("/apps/{app_id}/fields")
+async def get_app_fields(app_id: str, table_name: Optional[str] = None):
+    """Get list of fields in an application."""
+    return await execute_tool(ToolRequest(
+        tool_name="get_app_fields",
+        arguments={
+            "app_id": app_id,
+            "table_name": table_name
+        }
+    ))
+
+
+@app.get("/apps/{app_id}/fields/{field_name}/values")
+async def get_field_values(app_id: str, field_name: str, limit: int = 100):
+    """Get distinct values for a field."""
+    return await execute_tool(ToolRequest(
+        tool_name="get_field_values",
+        arguments={
+            "app_id": app_id,
+            "field_name": field_name,
+            "limit": limit
+        }
+    ))
+
+
+@app.post("/apps/{app_id}/data")
+async def get_app_data(app_id: str, request: DataRequest):
+    """Get data from an application."""
+    return await execute_tool(ToolRequest(
+        tool_name="get_app_data",
+        arguments={
+            "app_id": app_id,
+            "table_name": request.table_name,
+            "dimensions": request.dimensions,
+            "measures": request.measures,
+            "limit": request.limit,
+            "offset": request.offset
+        }
     ))
 
 

@@ -140,7 +140,10 @@ class QlikCloudAPI:
             response.raise_for_status()
 
             if response.headers.get("content-type", "").startswith("application/json"):
-                return response.json()
+                data = response.json()
+                # Log response for debugging
+                logger.info(f"API Response for {endpoint}:\n{json.dumps(data, indent=2)}")
+                return data
             else:
                 return {"raw_response": response.text}
 
@@ -237,19 +240,95 @@ class QlikCloudAPI:
         
         fields = []
         if isinstance(metadata, dict):
-            # Extract fields from metadata
+            # Try multiple possible structures for metadata
+            # Structure 1: qvTables -> qFields
             qv_tables = metadata.get("qvTables", [])
             if qv_tables:
+                logger.debug(f"Found {len(qv_tables)} tables in qvTables")
                 for table in qv_tables:
+                    table_name_meta = table.get("qName", "")
                     table_fields = table.get("qFields", [])
+                    if not table_fields:
+                        # Try alternative field structure
+                        table_fields = table.get("fields", [])
+                    
                     for field in table_fields:
-                        field_info = {
-                            "name": field.get("qName", ""),
-                            "table": table.get("qName", ""),
-                            "type": field.get("qType", "unknown")
-                        }
-                        if not table_name or field_info["table"] == table_name:
-                            fields.append(field_info)
+                        # Handle different field structures
+                        if isinstance(field, dict):
+                            field_name = field.get("qName") or field.get("name") or field.get("field")
+                            field_type = field.get("qType") or field.get("type") or "unknown"
+                        elif isinstance(field, str):
+                            field_name = field
+                            field_type = "unknown"
+                        else:
+                            continue
+                        
+                        if field_name:
+                            field_info = {
+                                "name": field_name,
+                                "table": table_name_meta,
+                                "type": field_type
+                            }
+                            if not table_name or field_info["table"] == table_name:
+                                fields.append(field_info)
+            
+            # Structure 2: Direct fields array (if qvTables didn't work)
+            if not fields:
+                direct_fields = metadata.get("fields", [])
+                if direct_fields:
+                    logger.debug(f"Found {len(direct_fields)} fields in direct fields array")
+                    for field in direct_fields:
+                        if isinstance(field, dict):
+                            field_name = field.get("qName") or field.get("name") or field.get("field")
+                            field_type = field.get("qType") or field.get("type") or "unknown"
+                            table_name_meta = field.get("table") or field.get("tableName") or "Unknown"
+                        elif isinstance(field, str):
+                            field_name = field
+                            field_type = "unknown"
+                            table_name_meta = "Unknown"
+                        else:
+                            continue
+                        
+                        if field_name:
+                            field_info = {
+                                "name": field_name,
+                                "table": table_name_meta,
+                                "type": field_type
+                            }
+                            if not table_name or field_info["table"] == table_name:
+                                fields.append(field_info)
+            
+            # Structure 3: tables array with fields
+            if not fields:
+                tables_array = metadata.get("tables", [])
+                if tables_array:
+                    logger.debug(f"Found {len(tables_array)} tables in tables array")
+                    for table in tables_array:
+                        table_name_meta = table.get("name") or table.get("qName") or ""
+                        table_fields = table.get("fields", []) or table.get("qFields", [])
+                        for field in table_fields:
+                            if isinstance(field, dict):
+                                field_name = field.get("qName") or field.get("name") or field.get("field")
+                                field_type = field.get("qType") or field.get("type") or "unknown"
+                            elif isinstance(field, str):
+                                field_name = field
+                                field_type = "unknown"
+                            else:
+                                continue
+                            
+                            if field_name:
+                                field_info = {
+                                    "name": field_name,
+                                    "table": table_name_meta,
+                                    "type": field_type
+                                }
+                                if not table_name or field_info["table"] == table_name:
+                                    fields.append(field_info)
+            
+            # Log metadata structure for debugging if no fields found
+            if not fields:
+                logger.warning(f"No fields found in metadata. Metadata keys: {list(metadata.keys())}")
+                logger.debug(f"Metadata structure sample: {json.dumps(metadata, indent=2)[:1000]}")
         
         result = {
             "app_id": app_id,

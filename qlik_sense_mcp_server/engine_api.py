@@ -36,20 +36,27 @@ class QlikEngineAPI:
         self.request_id += 1
         return self.request_id
 
-    def connect(self, app_id: Optional[str] = None) -> None:
+    def connect(self, app_id: Optional[str] = None, auth_token: Optional[str] = None) -> None:
         """Connect to Engine API via WebSocket."""
         # Try different WebSocket endpoints
         server_host = self.config.server_url.replace("https://", "").replace(
             "http://", ""
-        )
+        ).rstrip("/")
 
         # Order and count of endpoints controlled by retries setting
+        # For Qlik Cloud, we typically use wss://tenant.qlikcloud.com/app/engineData
         endpoints_all = [
-            f"wss://{server_host}:{self.config.engine_port}/app/engineData",
-            f"wss://{server_host}:{self.config.engine_port}/app",
-            f"ws://{server_host}:{self.config.engine_port}/app/engineData",
-            f"ws://{server_host}:{self.config.engine_port}/app",
+            f"wss://{server_host}/app/engineData",
+            f"wss://{server_host}/app",
         ]
+        
+        # Add non-SSL endpoints only if not verifying SSL (mostly for local dev/Enterprise)
+        if not self.config.verify_ssl:
+            endpoints_all.extend([
+                f"ws://{server_host}/app/engineData",
+                f"ws://{server_host}/app",
+            ])
+            
         endpoints_to_try = endpoints_all[: max(1, min(self.ws_retries, len(endpoints_all)))]
 
         # Setup SSL context
@@ -68,7 +75,10 @@ class QlikEngineAPI:
 
         # Headers for authentication
         headers = []
-        if self.config.api_key:
+        if auth_token:
+            # OAuth token for Qlik Cloud
+            headers.append(f"Authorization: Bearer {auth_token}")
+        elif self.config.api_key:
             # Use API key authentication
             headers.append(f"Authorization: Bearer {self.config.api_key}")
         elif self.config.user_directory and self.config.user_id:

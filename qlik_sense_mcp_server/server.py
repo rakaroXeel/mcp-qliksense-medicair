@@ -12,6 +12,8 @@ from mcp.types import CallToolResult, TextContent
 
 from .config import QlikSenseConfig
 from .cloud_api import QlikCloudAPI
+from .engine_api import QlikEngineAPI
+import traceback
 
 import logging
 import os
@@ -48,10 +50,12 @@ class QlikSenseMCPServer:
 
         # Initialize Cloud API client
         self.cloud_api = None
+        self.engine_api = None
 
         if self.config_valid:
             try:
                 self.cloud_api = QlikCloudAPI(self.config)
+                self.engine_api = QlikEngineAPI(self.config)
                 logger.info(f"Cloud API initialized for {self.config.server_url}")
             except Exception as e:
                 # API client will be None, tools will return errors
@@ -231,6 +235,20 @@ class QlikSenseMCPServer:
                         return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
                     
                     def _get_cloud_apps():
+                        # Fetch spaces map first to resolve names and types
+                        spaces_map = {}
+                        try:
+                            # Fetch all spaces (limit 100 for now, could be paginated if needed)
+                            spaces_result = self.cloud_api.get_spaces(limit=100)
+                            if "data" in spaces_result:
+                                for space in spaces_result["data"]:
+                                    spaces_map[space["id"]] = {
+                                        "name": space.get("name"),
+                                        "type": space.get("type")
+                                    }
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch spaces for mapping: {e}")
+
                         result = self.cloud_api.get_apps(
                             limit=limit,
                             offset=offset,
@@ -244,13 +262,25 @@ class QlikSenseMCPServer:
                         apps_data = result.get("data", [])
                         apps_list = []
                         for app in apps_data:
+                            space_id = app.get("spaceId")
+                            space_info = spaces_map.get(space_id, {})
+                            
+                            # Determine published status
+                            # 1. Check explicit 'published' flag in resourceAttributes
+                            is_published = app.get("resourceAttributes", {}).get("published", False)
+                            
+                            # 2. If not explicitly published, check if it's in a managed space
+                            if not is_published and space_info.get("type") == "managed":
+                                is_published = True
+
                             apps_list.append({
                                 "id": app.get("id"),
                                 "name": app.get("name"),
                                 "description": app.get("description"),
-                                "space": app.get("space", {}).get("name") if app.get("space") else None,
+                                "space": space_info.get("name"),
+                                "spaceId": space_id,
                                 "modifiedDate": app.get("updatedAt"),
-                                "published": app.get("published", False),
+                                "published": is_published,
                                 "resourceType": app.get("resourceType", "app")
                             })
                         
@@ -343,7 +373,70 @@ class QlikSenseMCPServer:
                         return [TextContent(type="text", text=json.dumps({"error": "Cloud API not initialized"}, indent=2, ensure_ascii=False))]
                     
                     def _get_app_fields():
-                        return self.cloud_api.get_app_fields(app_id, table_name)
+                        # First try REST API
+                        result = self.cloud_api.get_app_fields(app_id, table_name)
+                        
+                        # Check if we have "Unknown" tables which indicates missing metadata
+                        has_unknown_tables = False
+                        if "fields" in result:
+                            for field in result["fields"]:
+                                if field.get("table") == "Unknown":
+                                    has_unknown_tables = True
+                                    break
+                        
+                        # If we have unknown tables and engine API is available, try fallback
+                        if has_unknown_tables and self.engine_api:
+                            try:
+                                logger.info(f"REST API returned Unknown tables for app {app_id}, attempting Engine API fallback")
+                                # Get OAuth token from cloud API
+                                token = self.cloud_api._get_oauth_token()
+                                
+                                # Connect to engine with token
+                                self.engine_api.connect(app_id, auth_token=token)
+                                try:
+                                    # Open doc and get fields
+                                    # We need to open the doc first
+                                    self.engine_api.open_doc(app_id)
+                                    
+                                    # Get fields from engine
+                                    engine_result = self.engine_api.get_fields(handle=-1)
+                                    
+                                    if "fields" in engine_result and engine_result["fields"]:
+                                        logger.info(f"Engine API returned {len(engine_result['fields'])} fields")
+                                        
+                                        # Map engine fields to common format
+                                        mapped_fields = []
+                                        for field in engine_result["fields"]:
+                                            table = field.get("table_name", "Unknown")
+                                            # Filter by table if requested
+                                            if table_name and table != table_name:
+                                                continue
+                                                
+                                            mapped_fields.append({
+                                                "name": field.get("field_name"),
+                                                "table": table,
+                                                "type": field.get("data_type", "unknown"),
+                                                "key_type": field.get("key_type"),
+                                                "tags": field.get("tags", [])
+                                            })
+                                        
+                                        if mapped_fields:
+                                            return {
+                                                "app_id": app_id,
+                                                "fields": mapped_fields,
+                                                "total_fields": len(mapped_fields),
+                                                "source": "engine_api"
+                                            }
+                                finally:
+                                    # Always disconnect
+                                    self.engine_api.disconnect()
+                            except Exception as e:
+                                logger.error(f"Engine API fallback failed: {e}")
+                                # Fall through to return original result
+                                result["_fallback_error"] = str(e)
+                                result["_fallback_trace"] = traceback.format_exc()
+                        
+                        return result
                     
                     result = await asyncio.to_thread(_get_app_fields)
                     return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
